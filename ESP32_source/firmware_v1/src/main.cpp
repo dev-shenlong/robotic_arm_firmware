@@ -10,10 +10,18 @@ in the README.md file.
   * Which communicates to the ESP32 via a Serial network.
 ---------------------------------------------------------------------------
 */
+//sizeof 
 //importing necessary libraries
 #include <Arduino.h>
 #include <SCServo.h>
 #include <math.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Wire.h>
+
+//Initializing Display
+//Display Resolution is 128 pixels by 32 pixels
+Adafruit_SSD1306 display(128,32);
 
 //PIN numbers to communicate with the servos
 #define S_RXD 18
@@ -22,16 +30,21 @@ in the README.md file.
 SCSCL sc;
 SMS_STS st;
 
+//Variables
+
 int id_st[5] = {1, 2, 3, 4, 5};
 int id_sc[2] = {6, 7};
 
-int id_status[7] = {0,0,0,0,0,0,0};
+int id_status[7] = {-1,-1,-1,-1,-1,-1,-1};
 int *torque_stat;
+int *state_arr;
+int **robot_state_arr;
+int * connected_servos;
 
-//Setup Commands
+//Debug Commands
 int ping_test(SMS_STS st, int id);
 int ping_test(SCSCL sc, int id);
-int *ping_test(int *id[]);
+int *ping_test(int id[]);
 
 //Util Commands
 void set_joint(int id, int position, int velocity, int acceleration);
@@ -39,34 +52,73 @@ void set_multiple_joints(u8 id[], s16 position[], u16 velocity[], u8 acceleratio
 //void set_joint_trajectory(int id[], int position[][], int velocity[][], int acceleration[][]);
 
 //FeedBack Commands
-int *get_joint_state();
+int * get_joint_state(int);
+int **get_robot_state();
 
 // Test Commands
 int *torque_enable(int id[], int status_to_set[]);//review once
+int servo_classifier(int id);
 
 //Config Commands
 void set_register(int,int); // sets the ID of the servo motors
 
-void setup() {
+void display_text(String);
+void display_text(String, int);
+void setup()
+{
+
+  //Starting display
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.clearDisplay();
+
   Serial.begin(115200);
+
+  //Serial used as a debug tool
+  Serial.println("Initializing robotic Arm");
+  display_text("Welcome!\nInitializing arm");
+  
+
+  //Starting communication with Servos
   Serial1.begin(1000000, SERIAL_8N1, S_RXD, S_TXD);
   sc.pSerial = &Serial1;
   st.pSerial = &Serial1;
+
+  // Checking number of servos connected..
+  Serial.println("Pinging to check connected Servos");
+  display_text("Welcome!\nPinging Servos...");
   
+  //Checking and creating list of connected servos
+  int servo_id_list[] = {1, 2, 3, 4, 5, 6, 7};
+  connected_servos = ping_test(servo_id_list);
+  int no = 0;
+  for (int i = 0; i < 7; i++)
+  {
+    if (connected_servos[i] != -1)
+    {
+      no++;
+    }
+  }
+  display_text("Robotic Arm\nNo of Servos :", no);
+
+  //Need to calibrate arms buy switches
+  //1) make use of limit switches in order to reach 0 and 180 and then callibrate
+
 }
 
 void loop()
 {
-  //st.WritePosEx(1,2048,4000,50);
+  display_text("Robotic arm initialized\nWaiting for cmds");
   
-  sc.WritePos(2, 1000, 1500, 50);
-  delay(10000);
-  //st.WritePosEx(1, 0, 3000, 50);
-  sc.WritePos(2, 0, 1500, 50);
-  delay(5000);
 }
 
-
+int servo_classifier(int id)
+{
+  if(id == id_sc[0] || id == id_sc[1])
+  {
+    return 1;
+  }
+  return 0;
+}
 
 int ping_test(SCSCL sc, int id)
 {
@@ -99,11 +151,11 @@ int ping_test(SMS_STS st, int id)
     return -1;
   }
 
-int * ping_test(int id[])
+int * ping_test(int id[7])
 {
-  for (int i = 0; i < sizeof(id) / (sizeof(id[0])); i++)
+  for (int i = 0; i < 7; i++)
   {
-    if(id[i] == id_sc[0] || id[i] == id_sc[1])
+    if(servo_classifier(id[i]))
     {
       id_status[i] = ping_test(st, id[i]);
     }
@@ -121,7 +173,7 @@ int * torque_enable(int id[], int status_to_set[])
   torque_stat = (int *)malloc(sizeof(id));
   for (int i = 0; i < sizeof(id) / sizeof(int); i++)
   {
-    if(id[i] == id_sc[0] || id[i] == id_sc[1])
+    if(servo_classifier(id[i]))
     {
       st.EnableTorque(id[i], status_to_set[i]);
       torque_stat[i] = status_to_set[i];
@@ -138,18 +190,22 @@ int * torque_enable(int id[], int status_to_set[])
 //Position Mode Set joints
 void set_joint(int id, int position, int velocity, int acceleration)
 {
-  if (id == id_sc[0] || id == id_sc[1])
+  if (servo_classifier(id))
   {
   
     sc.WritePosEx(id, position, velocity, acceleration);
-    while(abs(sc.ReadPos(id)- position) > 0) //System implementation that will delay until servo is at desired position
+    while(abs(sc.ReadPos(id)- position) > 5) //System implementation that will delay until servo is at desired position
     delay(1);
-  }
+  } 
   else
   {
-    st.WritePosEx(1, position, velocity, acceleration);
-    while(abs(st.ReadPos(id)- position) > 0) //System implementation that will delay until servo is at desired position
-    delay(1);
+    st.WritePosEx(id, position, velocity, acceleration);
+    while(abs(st.ReadPos(id)- position) > 5)
+    {
+
+      Serial.println(st.ReadPos(id));
+      delay(1);
+    } // System implementation that will delay until servo is at desired position
   }
 }
 
@@ -159,10 +215,11 @@ void set_multiple_joints(u8 id[], s16 position[], u16 velocity[], u8 acceleratio
   int sc_index[2] = {-1,-1}, st_index[5] = {-1,-1,-1,-1,-1};
   int sc_curr = 0;
   int st_curr = 0;
-  for (int i = 0; i < sizeof(id) / sizeof(int); i++)
+  //might not work need to test
+  for (int i = 0; i < (sizeof(id) / sizeof(u8)); i++)
   {
 
-    if(id[i] == id_sc[0] || id[i] == id_sc[1])
+    if(servo_classifier(id[i]))
     {
       sc_index[sc_curr] = i;
       sc_curr++;
@@ -196,9 +253,10 @@ void set_multiple_joints(u8 id[], s16 position[], u16 velocity[], u8 acceleratio
   free(st_acc);
 }
 
+
 void set_register(int prev_id, int new_id)
 {
-  if(prev_id == id_sc[0] || prev_id == id_sc[1])
+  if(servo_classifier(prev_id))
   {
     for (int i = 0; i < 2;i++)
     {
@@ -224,4 +282,74 @@ void set_register(int prev_id, int new_id)
       }
     }
   }
+}
+ 
+//FeedBack Commands
+int * get_joint_state(int id)
+{
+  free(state_arr);
+  state_arr = (int *)malloc(8 * sizeof(int));
+  if (servo_classifier(id))
+  {
+    state_arr[0] = sc.ReadPos(id);
+    state_arr[1] = sc.ReadSpeed(id);
+    state_arr[2] = sc.ReadLoad(id);
+    state_arr[3] = sc.ReadVoltage(id);
+    state_arr[4] = sc.ReadTemper(id);
+    state_arr[5] = sc.ReadMove(id);
+    state_arr[6] = sc.ReadCurrent(id);
+    state_arr[7] = sc.ReadMode(id);
+  }
+  else
+  {
+    state_arr[0] = st.ReadPos(id);
+    state_arr[1] = st.ReadSpeed(id);
+    state_arr[2] = st.ReadLoad(id);
+    state_arr[3] = st.ReadVoltage(id);
+    state_arr[4] = st.ReadTemper(id);
+    state_arr[5] = st.ReadMove(id);
+    state_arr[6] = st.ReadCurrent(id);
+    state_arr[7] = st.ReadMode(id);
+  }
+  return state_arr;
+}
+
+int **get_robot_state()
+{
+  free(robot_state_arr);
+  robot_state_arr = (int **)malloc(7 * sizeof(int *));
+  int *temp_arr;
+  for (int i = 1; i < 8; i++)
+  {
+    temp_arr = get_joint_state(i);
+    robot_state_arr[i - 1] = (int *)malloc(7 * sizeof(int));
+    for (int j = 0; j < 7;j++)
+    {
+      robot_state_arr[i - 1][j] = temp_arr[j];
+    }
+  }
+
+  return robot_state_arr;
+}
+
+void display_text(String txt)
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println(txt);
+  //display.println("Initializing robotic arm..");
+  display.display(); 
+}
+void display_text(String txt,int dat)
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.print(txt);
+  display.println(dat);
+  // display.println("Initializing robotic arm..");
+  display.display(); 
 }
